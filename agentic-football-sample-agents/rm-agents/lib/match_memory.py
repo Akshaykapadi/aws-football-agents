@@ -4,8 +4,10 @@ STM  MatchTracker — in-process, per runtime session. Watches score, time and p
      tick, counts the shots the instinct layer takes and the goals for/against, and turns that
      into DYNAMIC DOCTRINE: `adjust()` returns a FallbackConfig tuned to the match situation
      (losing → wider shot gate; two up → tighter and deeper; conceded early → transition guard;
-     last minute → volume). It also LEARNS the engine's corner naming: after four scoreless shots
-     it flips the aim mapping; a goal locks the mapping that scored. Zero latency — pure arithmetic.
+     last minute → volume). It also LEARNS shooting from the ball itself: the tick after a shot,
+     the ball's position + velocity give the y where it crosses the goal line and its height → whether
+     the corner letters point the right way (flip), whether T shots sail high (prefer_low), and which
+     distance bands never hit the target (banned → carry closer). Zero latency — pure arithmetic.
 
 LTM  MemoryStore — Amazon Bedrock AgentCore Memory. Every notable moment (match start, goal for,
      goal against, aim flip, 60-second snapshots) is written as an event to the actor's "career"
@@ -28,7 +30,9 @@ import threading
 import time
 from dataclasses import dataclass, field, replace
 
-FLIP_AFTER_SCORELESS_SHOTS = 4
+MIN_SHOTS_TO_JUDGE = 3
+GOAL_HALF_WIDTH = 5.0
+HIGH_Z = 3.0
 EARLY_CONCEDE_SECONDS = 90.0
 LATE_MATCH_SECONDS = 240.0
 SNAPSHOT_EVERY_SECONDS = 60.0
@@ -160,6 +164,32 @@ def priors_from_events(events: list[dict]) -> dict:
     early = {e.get("session") for e in events if e.get("type") == "goal_against" and e.get("early")}
     if recent and len(recent & early) >= 1:
         priors["guard_transitions"] = True
+    results = [e for e in events if e.get("type") == "shot_result"]
+    if results:
+        recent = results[-12:]
+        matches = [e for e in recent if "side_match" in e]
+        if len(matches) >= MIN_SHOTS_TO_JUDGE:
+            rate = sum(1 for e in matches if e["side_match"]) / len(matches)
+            last_flip = bool(recent[-1].get("flip", False))
+            if rate <= 0.34:
+                priors["aim_flip"] = not last_flip
+            elif rate >= 0.66:
+                priors["aim_flip"] = last_flip
+                priors["aim_locked"] = True
+        tops = [e for e in recent if e.get("tb") == "T"]
+        if len(tops) >= MIN_SHOTS_TO_JUDGE and sum(1 for e in tops if e.get("high")) / len(tops) >= 0.67:
+            priors["prefer_low"] = True
+        stats: dict = {}
+        for e in results:
+            b = str(e.get("band", 3)); st = stats.setdefault(b, [0, 0])
+            st[0] += int(bool(e.get("on_target"))); st[1] += 1
+        priors["band_stats"] = stats
+        landing: dict = {}
+        for e in results:
+            if e.get("aim") and "y_goal" in e:
+                l = landing.setdefault(e["aim"], [0.0, 0]); l[0] += float(e["y_goal"]); l[1] += 1
+        priors["aim_landing"] = landing
+        priors["on_target_rate"] = round(sum(1 for e in results if e.get("on_target")) / len(results), 2)
     snaps = [e for e in events if e.get("type") == "snapshot"]
     if snaps:
         priors["past_matches"] = len(recent)
@@ -187,6 +217,12 @@ class MatchTracker:
     shots_since_goal: int = 0
     aim_flip: bool = False
     aim_locked: bool = False
+    prefer_low: bool = False
+    pending_shot: dict | None = None
+    side_obs: list = field(default_factory=list)      # (intended_side, observed_sign)
+    high_obs: list = field(default_factory=list)      # (tb_letter, went_high)
+    band_obs: dict = field(default_factory=dict)      # band -> [on_target, total]
+    aim_landing: dict = field(default_factory=dict)   # aim letters -> [sum_y_at_goal, count]  (this match)
     conceded_early: bool = False
     llm_ticks: int = 0
     fallback_ticks: int = 0
@@ -220,6 +256,9 @@ class MatchTracker:
         self.score_for, self.score_against = mine, theirs
         self._seen_score = True
 
+        if self.pending_shot is not None:
+            self._judge_shot(game_state, team_id)
+
         if t - self._last_snapshot >= SNAPSHOT_EVERY_SECONDS:
             self._snapshot()
 
@@ -235,6 +274,9 @@ class MatchTracker:
         self._cache_key = ()
         self.aim_flip = bool(self.priors.get("aim_flip", self.aim_flip))
         self.aim_locked = bool(self.priors.get("aim_locked", self.aim_locked))
+        self.prefer_low = bool(self.priors.get("prefer_low", self.prefer_low))
+        self.pending_shot = None
+        self.side_obs, self.high_obs, self.band_obs, self.aim_landing = [], [], {}, {}
         self._emit({"type": "match_start", "session": self.session_id, "team": team_id})
         if self.store and not self.priors:
             self.store.load_priors_async(self._apply_priors)
@@ -246,6 +288,7 @@ class MatchTracker:
             if "aim_flip" in self.priors and not self.shots:
                 self.aim_flip = bool(self.priors["aim_flip"])
                 self.aim_locked = bool(self.priors.get("aim_locked", False))
+            self.prefer_low = bool(self.priors.get("prefer_low", self.prefer_low))
             self._cache_key = ()
         self._info(f"priors applied {self.priors} lessons={len(self.lessons)}")
 
@@ -268,16 +311,103 @@ class MatchTracker:
         self._cache_key = ()
 
     def note_shot(self, cmd: dict, pos: dict, opp_goal_x: float) -> None:
+        params = cmd.get("parameters", {})
+        aim = params.get("aim_location") or "BR"
         d = abs(pos.get("x", 0) - opp_goal_x)
-        self.shots.append({"t": self.game_time, "dist": round(d, 1),
-                           "aim": cmd.get("parameters", {}).get("aim_location"), "flip": self.aim_flip})
+        left_is_pos_y = opp_goal_x > 0
+        side = 1 if (aim[0] == "T") else -1          # intended y side under the T=+y convention
+        if aim[0] == "B" and self.prefer_low:          # prefer_low makes the side live in L/R
+            side = 1 if ((aim[1] == "L") == left_is_pos_y) else -1
+        if self.aim_flip:
+            side = -side
+        self.shots.append({"t": self.game_time, "dist": round(d, 1), "aim": aim, "power": params.get("power"),
+                           "flip": self.aim_flip, "x": pos.get("x", 0), "y": pos.get("y", 0)})
         self.shots_since_goal += 1
-        if not self.aim_locked and self.shots_since_goal >= FLIP_AFTER_SCORELESS_SHOTS:
-            self.aim_flip = not self.aim_flip
-            self.shots_since_goal = 0
-            self._cache_key = ()
-            self._emit({"type": "aim_flip", "t": self.game_time, "flip": self.aim_flip})
-            self._info(f"{FLIP_AFTER_SCORELESS_SHOTS} scoreless shots — flipping aim mapping to flip={self.aim_flip}")
+        self.pending_shot = {"t": self.game_time, "side": side, "tb": aim[0], "aim": aim, "dist": d,
+                             "opp_goal_x": opp_goal_x, "from": dict(pos)}
+
+    def _judge_shot(self, game_state: dict, team_id: int) -> None:
+        """Next tick after a shot: where is the ball crossing the goal line, and how high?"""
+        shot = self.pending_shot
+        ball = game_state.get("ball") or {}
+        bp = ball.get("position") or {}
+        bv = ball.get("velocity") or {}
+        gx = shot["opp_goal_x"]
+        d = 1.0 if gx > 0 else -1.0
+        vx = float(bv.get("x", 0) or 0)
+        result = None
+        if vx * d > 1.0:                                   # still travelling at goal → extrapolate
+            tt = (gx - bp.get("x", 0)) / vx
+            if tt >= 0:
+                y_goal = bp.get("y", 0) + float(bv.get("y", 0) or 0) * tt
+                z_goal = float(bp.get("z", 0) or 0) + float(bv.get("z", 0) or 0) * tt
+                result = {"y": y_goal, "high": z_goal > HIGH_Z}
+        elif (bp.get("x", 0) - gx) * d >= -6.0:            # already at/over the line (or dead near it)
+            result = {"y": bp.get("y", 0), "high": float(bp.get("z", 0) or 0) > HIGH_Z}
+        self.pending_shot = None
+        if result is None:
+            self._info(f"shot not judged: ball at ({bp.get('x', 0):.1f},{bp.get('y', 0):.1f},{bp.get('z', 0) or 0:.1f}) "
+                       f"vel=({vx:.1f},{float(bv.get('y', 0) or 0):.1f}) holder={find_holder_idx(game_state)}")
+            return                                         # blocked / tackled / reset — no lesson
+        on_target = abs(result["y"]) <= GOAL_HALF_WIDTH and not result["high"]
+        band = self._band(shot["dist"])
+        stat = self.band_obs.setdefault(band, [0, 0])
+        stat[0] += int(on_target); stat[1] += 1
+        observed_sign = 1 if result["y"] > 0 else -1
+        self.side_obs.append((shot["side"], observed_sign))
+        land = self.aim_landing.setdefault(shot["aim"], [0.0, 0])
+        land[0] += float(result["y"]); land[1] += 1
+        self.high_obs.append((shot["tb"], bool(result["high"])))
+        self._learn()
+        self._emit({"type": "shot_result", "t": self.game_time, "dist": round(shot["dist"], 1), "band": band, "aim": shot["aim"],
+                    "on_target": on_target, "y_goal": round(result["y"], 1), "high": result["high"],
+                    "side_match": shot["side"] == observed_sign, "tb": shot["tb"], "flip": self.aim_flip})
+        self._info(f"shot judged: dist={shot['dist']:.0f} y_at_goal={result['y']:.1f} high={result['high']} on_target={on_target}")
+
+    @staticmethod
+    def _band(d):
+        return 0 if d < 12 else (1 if d < 25 else (2 if d < 40 else 3))
+
+    def _learn(self) -> None:
+        """Turn observations into settings: corner mapping, low preference, banned distance bands."""
+        if len(self.side_obs) >= MIN_SHOTS_TO_JUDGE and not self.aim_locked:
+            recent = self.side_obs[-6:]
+            mismatch = sum(1 for a, b in recent if a != b) / len(recent)
+            if mismatch >= 0.67:
+                self.aim_flip = not self.aim_flip
+                self.side_obs = []
+                self._emit({"type": "aim_flip", "t": self.game_time, "flip": self.aim_flip})
+                self._info(f"shots landing on the keeper's side — flipping corner mapping to flip={self.aim_flip}")
+            elif mismatch <= 0.34:
+                self.aim_locked = True
+        tops = [h for tb, h in self.high_obs[-6:] if tb == "T"]
+        if len(tops) >= MIN_SHOTS_TO_JUDGE and sum(tops) / len(tops) >= 0.67 and not self.prefer_low:
+            self.prefer_low = True
+            self._info("T shots sail high — keeping every shot low (B)")
+        self._cache_key = ()
+
+    def aim_map(self) -> dict:
+        """aim letters -> mean observed y at the goal line (this match merged with LTM priors)."""
+        out = {}
+        prior = self.priors.get("aim_landing", {})
+        for aim in set(prior) | set(self.aim_landing):
+            ps, pn = prior.get(aim, [0.0, 0])
+            ls, ln = self.aim_landing.get(aim, [0.0, 0])
+            if pn + ln:
+                out[aim] = {"y": round((ps + ls) / (pn + ln), 1), "n": pn + ln}
+        return out
+
+    def banned_bands(self) -> tuple:
+        out = []
+        for band, (hit, total) in self.band_obs.items():
+            prior = self.priors.get("band_stats", {}).get(str(band), [0, 0])
+            h, n = hit + prior[0], total + prior[1]
+            if n >= MIN_SHOTS_TO_JUDGE and h == 0 and band > 0:
+                out.append(band)
+        for band, (h, n) in self.priors.get("band_stats", {}).items():
+            if int(band) not in self.band_obs and n >= MIN_SHOTS_TO_JUDGE and h == 0 and int(band) > 0:
+                out.append(int(band))
+        return tuple(sorted(set(out)))
 
     def note_tick(self, kind: str) -> None:
         if kind == "llm":
@@ -293,12 +423,16 @@ class MatchTracker:
         diff = self.score_for - self.score_against
         late = self.game_time >= LATE_MATCH_SECONDS
         guard = self.conceded_early or bool(self.priors.get("guard_transitions"))
+        banned = self.banned_bands()
+        amap = self.aim_map()
         key = (id(cfg), diff if -1 <= diff <= 2 else (2 if diff > 2 else -1), late, guard,
-               self.aim_flip, self.priors.get("shoot_bonus", 0))
+               self.aim_flip, self.prefer_low, banned, self.priors.get("shoot_bonus", 0),
+               tuple(sorted((k, v["y"], v["n"]) for k, v in amap.items())))
         if key == self._cache_key and self._cache_cfg is not None:
             return self._cache_cfg
 
-        changes: dict = {"aim_flip": self.aim_flip}
+        changes: dict = {"aim_flip": self.aim_flip, "prefer_low": self.prefer_low, "banned_bands": banned,
+                         "aim_map": amap}
         bonus = float(self.priors.get("shoot_bonus", 0))
         if diff < 0:
             bonus += 5.0
@@ -348,7 +482,8 @@ class MatchTracker:
         self._last_snapshot = self.game_time
         self._emit({"type": "snapshot", "t": self.game_time, "session": self.session_id,
                     "score": [self.score_for, self.score_against], "shots": len(self.shots),
-                    "flip": self.aim_flip, "locked": self.aim_locked, "early": self.conceded_early,
+                    "flip": self.aim_flip, "locked": self.aim_locked, "low": self.prefer_low,
+                    "bands": self.band_obs, "landing": self.aim_landing, "early": self.conceded_early,
                     "llm": self.llm_ticks, "fallback": self.fallback_ticks, "instinct": self.instinct_ticks,
                     "final": force})
 
@@ -360,3 +495,9 @@ class MatchTracker:
     def _info(self, msg: str) -> None:
         if self.log:
             self.log.info(f"{self.position_label} memory: {msg}")
+
+
+def find_holder_idx(game_state: dict):
+    from state import find_holder, _player_idx
+    h = find_holder(game_state.get("ball") or {}, game_state.get("players", []))
+    return None if h is None else _player_idx(h)

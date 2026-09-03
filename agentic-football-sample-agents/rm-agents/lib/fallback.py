@@ -40,22 +40,34 @@ class FallbackConfig:
     """GK | DEF | MID | FWD."""
 
     # --- Shooting (distances are x-only, the way the engine's goal line works) ---
-    shoot_threshold: float = 30.0
-    """On the ball and within this x-distance of the opponent goal → SHOOT."""
-    shoot_max_abs_y: float = 18.0
+    shoot_threshold: float = 45.0
+    """On the ball and within this x-distance of the opponent goal with a gap → SHOOT."""
+    shoot_max_abs_y: float = 22.0
     """...and only when |y| is at most this (goalmouth is y -5..5)."""
     shoot_near: float = 15.0
     shoot_power_near: float = 0.85
     shoot_power_far: float = 1.0
     aim_flip: bool = False
-    """Invert the corner mapping. Learned at match time by lib/match_memory.py (four scoreless shots → flip)."""
+    """Invert the corner side mapping. Learned from observed shot trajectories (lib/match_memory.py)."""
+    prefer_low: bool = False
+    """Always use the B (bottom) letter — learned when T shots are seen sailing high."""
+    banned_bands: tuple = ()
+    """Distance bands (tools.BANDS indexes) whose shots never reached the target → carry closer instead."""
+    aim_map: dict = field(default_factory=dict)
+    """aim letters -> {y: mean observed y at the goal line, n} — learned this match + LTM. Used to pick a corner that lands inside."""
+    llm_shot: bool = True
+    """On the ball: ask the LLM with the SHOT TOOL line (tool shot if late)."""
 
     # --- Pressure ---
     pressure_release_distance: float = 4.0
     """An opponent closer than this means I am about to be tackled."""
-    pressure_shoot_distance: float = 38.0
+    pressure_shoot_distance: float = 50.0
     """Pressed inside this x-distance (and pressure_shoot_max_abs_y) → shoot anyway."""
-    pressure_shoot_max_abs_y: float = 22.0
+    pressure_shoot_max_abs_y: float = 25.0
+    llm_positions: bool = True
+    """Off the ball while we attack: ask the LLM to pick among the tool's open positions (tool best if late)."""
+    side_y: float = 0.0
+    """Wing bias for open positions: -1 left (FWD1), +1 right (FWD2), 0 central."""
     outlet_clearance: float = 5.0
     """A teammate with no opponent inside this radius is an open outlet."""
 
@@ -110,8 +122,8 @@ GK_CONFIG = FallbackConfig(
 
 DEF_CONFIG = FallbackConfig(
     role="DEF",
-    shoot_threshold=22.0, shoot_max_abs_y=12.0,
-    pressure_shoot_distance=28.0, pressure_shoot_max_abs_y=14.0,
+    shoot_threshold=35.0, shoot_max_abs_y=15.0,
+    pressure_shoot_distance=40.0, pressure_shoot_max_abs_y=18.0, llm_positions=False,
     support_x_ref="my_goal", support_x_factor=0.45, support_y="track_ball",
     support_y_factor=0.3, support_y_clamp=10.0, support_sprint=False,
     prefer_pass_ahead=True, carry_depth=30.0,
@@ -122,7 +134,7 @@ DEF_CONFIG = FallbackConfig(
 
 MID_CONFIG = FallbackConfig(
     role="MID",
-    shoot_threshold=28.0, shoot_max_abs_y=15.0,
+    shoot_threshold=40.0, shoot_max_abs_y=18.0,
     support_x_ref="opp_goal", support_depth=26.0, support_y="track_ball",
     support_y_factor=0.4, support_y_clamp=12.0, support_sprint=True,
     prefer_pass_ahead=True, carry_depth=14.0,
@@ -131,8 +143,8 @@ MID_CONFIG = FallbackConfig(
 )
 
 FWD1_CONFIG = FallbackConfig(
-    role="FWD",
-    shoot_threshold=30.0, shoot_max_abs_y=18.0,
+    role="FWD", side_y=-1.0,
+    shoot_threshold=45.0, shoot_max_abs_y=22.0,
     support_x_ref="opp_goal", support_depth=14.0, support_y=-7.0, support_sprint=True,
     carry_depth=10.0,
     press_distance=18.0, press_intensity=0.8,
@@ -140,8 +152,8 @@ FWD1_CONFIG = FallbackConfig(
 )
 
 FWD2_CONFIG = FallbackConfig(
-    role="FWD",
-    shoot_threshold=30.0, shoot_max_abs_y=18.0,
+    role="FWD", side_y=1.0,
+    shoot_threshold=45.0, shoot_max_abs_y=22.0,
     support_x_ref="opp_goal", support_depth=14.0, support_y=7.0, support_sprint=True,
     carry_depth=10.0,
     press_distance=18.0, press_intensity=0.8,
@@ -290,10 +302,12 @@ def _clearance(p, opps) -> float:
     return _nearest_opp_dist(opps, _pos(p))
 
 
-def _best_outlet(cfg, mine, opps, my_pid, pos, opp_goal_x):
-    """Most advanced open teammate; if nobody is open, the one with the most room. Never the GK."""
+def _best_outlet(cfg, mine, opps, my_pid, pos, opp_goal_x, allow_backward=False):
+    """Most advanced open teammate AHEAD of me (or level); backward only when allowed. Never the GK."""
     exclude = set(cfg.pass_exclude_ids) | {my_pid}
-    outlets = [p for p in mine if _player_idx(p) not in exclude]
+    my_d = abs(pos.get("x", 0) - opp_goal_x)
+    outlets = [p for p in mine if _player_idx(p) not in exclude
+               and (allow_backward or abs(_pos(p).get("x", 0) - opp_goal_x) <= my_d + 2)]
     if not outlets:
         return None
     open_ = [p for p in outlets if _clearance(p, opps) >= cfg.outlet_clearance]
@@ -323,8 +337,14 @@ def _forward_ahead(cfg, mine, opps, pos, opp_goal_x):
 # Instinct layer
 # ---------------------------------------------------------------------------
 
-def instinct_command(cfg: FallbackConfig, game_state: dict, team_id: int, my_pid: int):
-    """Code-decided command for this tick, or None when the LLM should decide (defensive phase)."""
+def instinct_command(cfg: FallbackConfig, game_state: dict, team_id: int, my_pid: int,
+                     allow_llm_positions: bool = False):
+    """Code-decided command for this tick, or None when the LLM should decide.
+
+    None in the defensive phase (opponent has the ball), and — when allow_llm_positions and
+    cfg.llm_positions — off the ball while we attack, so the model can pick among the tool's
+    open positions; the rule-based fallback then returns the tool's best if the model is late.
+    """
     players = game_state.get("players", [])
     ball = game_state.get("ball", {})
     ball_pos = ball.get("position") or {"x": 0, "y": 0}
@@ -343,10 +363,14 @@ def instinct_command(cfg: FallbackConfig, game_state: dict, team_id: int, my_pid
                    my_goal_x, opp_goal_x, i_have_ball)
 
     if i_have_ball:
+        if allow_llm_positions and cfg.llm_shot and cfg.role != "GK":
+            return None
         return _on_ball(cfg, my_pid, team_id, pos, players, mine, opps, my_goal_x, opp_goal_x)
 
     if we_have_ball:
-        return _support(cfg, my_pid, team_id, ball_pos, my_goal_x, opp_goal_x)
+        if allow_llm_positions and cfg.llm_positions:
+            return None
+        return _support(cfg, my_pid, team_id, ball_pos, my_goal_x, opp_goal_x, players)
 
     if holder is None:                           # loose ball
         my_d = dist(pos, ball_pos)
@@ -358,42 +382,32 @@ def instinct_command(cfg: FallbackConfig, game_state: dict, team_id: int, my_pid
 
 
 def _on_ball(cfg, pid, tid, pos, players, mine, opps, my_goal_x, opp_goal_x):
-    pressed = (cfg.pressure_release_distance > 0
-               and _nearest_opp_dist(opps, pos) < cfg.pressure_release_distance)
-
-    if _in_shot_range(cfg, pos, opp_goal_x):
-        plan = shot_plan(pos, players, tid, opp_goal_x, cfg.aim_flip)
-        close = abs(pos.get("x", 0) - opp_goal_x) <= 10
-        if plan["blocked"] and not pressed and not close:
-            return _sidestep_for_shot(cfg, pid, tid, pos, players, opp_goal_x)
-        return _shoot(cfg, pid, tid, pos, players, opp_goal_x)
-    if pressed:
-        if (abs(pos.get("x", 0) - opp_goal_x) <= cfg.pressure_shoot_distance
-                and abs(pos.get("y", 0)) <= cfg.pressure_shoot_max_abs_y):
-            return _shoot(cfg, pid, tid, pos, players, opp_goal_x, force_power=cfg.shoot_power_far)
-        target = _best_outlet(cfg, mine, opps, pid, pos, opp_goal_x)
-        if target is not None:
-            return _pass_to(cfg, target, pid, tid, pos, opp_goal_x)
-
-    if cfg.prefer_pass_ahead:
-        target = _forward_ahead(cfg, mine, opps, pos, opp_goal_x)
-        if target is not None:
-            return _pass_to(cfg, target, pid, tid, pos, opp_goal_x)
-
-    d = _dir(opp_goal_x)
-    tx = opp_goal_x - d * cfg.carry_depth
-    # never carry backwards: at least 8 further forward than where I stand
-    if (tx - pos.get("x", 0)) * d < 8:
-        tx = pos.get("x", 0) + d * 8
-    return [_cmd("MOVE_TO", pid, tid,
-                 {"target_x": _clamp(tx, -52, 52), "target_y": round(pos.get("y", 0) * 0.5, 1),
-                  "sprint": True})]
+    """On the ball → SHOOT from anywhere, unless this distance band is known to miss: then carry closer."""
+    from tools import shot_opportunity
+    shot = shot_opportunity(players, tid, pos, opp_goal_x, cfg.aim_flip, cfg.prefer_low, cfg.aim_map)
+    if shot["band"] in cfg.banned_bands and shot["band"] > 0:
+        d = _dir(opp_goal_x)
+        tx = _clamp(pos.get("x", 0) + d * 12, -52, 52)
+        return [_cmd("MOVE_TO", pid, tid, {"target_x": round(tx, 1), "target_y": round(pos.get("y", 0) * 0.6, 1), "sprint": True})]
+    return _shoot_cmd(pid, tid, shot, power=shot["power"])
 
 
-def _support(cfg, pid, tid, ball_pos, my_goal_x, opp_goal_x):
+def _shoot_cmd(pid, tid, shot, power):
+    return [_cmd("SHOOT", pid, tid, {"aim_location": shot["aim_location"], "power": power})]
+
+
+def _support(cfg, pid, tid, ball_pos, my_goal_x, opp_goal_x, players=None):
     d = _dir(opp_goal_x)
     if cfg.support_x_ref == "my_goal":
         tx = my_goal_x * cfg.support_x_factor
+    elif players:
+        from tools import open_positions
+        best = open_positions(players, tid, pid, ball_pos, opp_goal_x, cfg.side_y,
+                              max_depth=cfg.support_depth + 20)
+        if best:
+            return [_cmd("MOVE_TO", pid, tid, {"target_x": best[0]["x"], "target_y": best[0]["y"],
+                                                 "sprint": cfg.support_sprint})]
+        tx = opp_goal_x - d * cfg.support_depth
     else:
         tx = opp_goal_x - d * cfg.support_depth
     if cfg.support_y == "track_ball":
@@ -463,19 +477,29 @@ def build_fallback(cfg: FallbackConfig) -> Callable[[dict, int, int], list[dict]
             return [_cmd("CLEAR_OVERRIDE", my_pid, team_id, {})]
         pos = _pos(me)
 
-        # DEF: mark the most dangerous opponent
+        holder = find_holder(ball, players)
+        carrier_pos = _pos(holder) if holder is not None else ball_pos
+
+        # DEF: the deepest opponent inside 35 of our goal is always marked
         if cfg.mark_threshold > 0 and opps:
             dangerous = min(opps, key=lambda p: abs(_pos(p).get("x", 0) - my_goal_x))
-            if abs(_pos(dangerous).get("x", 0) - my_goal_x) < cfg.mark_threshold:
+            if abs(_pos(dangerous).get("x", 0) - my_goal_x) < cfg.mark_threshold and dangerous is not holder:
                 return [_cmd("MARK", my_pid, team_id,
                              {"target_player_id": _player_idx(dangerous),
                               "tightness": cfg.mark_tightness}, duration=3)]
 
-        # One presser: the teammate nearest the ball
-        nearest = min(mine, key=lambda p: dist(_pos(p), ball_pos))
-        if _player_idx(nearest) == my_pid and dist(pos, ball_pos) < cfg.press_distance:
-            return [_cmd("PRESS_BALL", my_pid, team_id,
-                         {"intensity": cfg.press_intensity}, duration=cfg.press_duration)]
+        # Aggressive shape: nearest teammate presses at 1.0, second cuts the lane, the rest man-mark
+        order = sorted((p for p in mine if _player_idx(p) != 0), key=lambda p: dist(_pos(p), carrier_pos))
+        rank = next((i for i, p in enumerate(order) if _player_idx(p) == my_pid), 99)
+        if rank == 0 and dist(pos, carrier_pos) < cfg.press_distance + 10:
+            return [_cmd("PRESS_BALL", my_pid, team_id, {"intensity": 1.0}, duration=2)]
+        if rank == 1 and dist(pos, carrier_pos) < cfg.press_distance + 10:
+            return [_cmd("INTERCEPT", my_pid, team_id, {"aggressive": True}, duration=2)]
+        free_opps = [o for o in opps if o is not holder and _player_idx(o) != 0]
+        if free_opps and cfg.role != "FWD":
+            target = min(free_opps, key=lambda o: dist(_pos(o), pos))
+            return [_cmd("MARK", my_pid, team_id,
+                         {"target_player_id": _player_idx(target), "tightness": "TIGHT"}, duration=3)]
 
         tx, ty = _default_pos(cfg, my_goal_x, opp_goal_x, ball_pos)
         return [_cmd("MOVE_TO", my_pid, team_id,

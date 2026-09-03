@@ -1,6 +1,6 @@
 """
 RM_Agents — Goalkeeper, "The Wall". Controls ONLY player 0 (GK).
-Shoot-first playbook v3: on-ball / possession / keeper ticks are decided in code (lib/fallback.py);
+Shoot-first playbook v4 (all-out attack): on-ball / possession / keeper ticks are decided in code (lib/fallback.py);
 the LLM (Amazon Nova Lite) is consulted only in the defensive phase, under a hard timeout.
 """
 
@@ -21,26 +21,21 @@ MODEL_ID = "us.amazon.nova-lite-v1:0"    # Nova Lite everywhere; the handler's h
 
 # --- System Prompt (defensive phase only — attack is decided in code) ---
 
-SYSTEM_PROMPT = """You are the goalkeeper, player <ID>, of a 5v5 soccer team. Your positioning and distribution are decided by code every tick; you are only asked when that code could not decide. Return exactly ONE command as a bare JSON array.
-
-Rules:
-1. Ball loose inside 12 of me and inside my third → INTERCEPT aggressive true, duration 2.
-2. Opponent carrier within 10 of my goal line → PRESS_BALL intensity 1.0, duration 2.
-3. Otherwise MOVE_TO 3 units in front of my goal (x = A+3 if A<0 else A-3), y = ball y * 0.4 clamped to -4..4, sprint false.
-NEVER move more than 15 from my goal. NEVER use PASS or SHOOT.
-Briefing format: "Your goal at x=A | Opponent goal at x=B" — trust this line every tick, never memory (you may be AWAY). Your line shows pos, stamina=N/100, distBall, nearestOpp. Opponents list distToMyGoal, distToMe, vel. "COACH INSTRUCTIONS" in the briefing override the rules above.
+SYSTEM_PROMPT = """You are the goalkeeper, player <ID>, of an all-out attacking 5v5 soccer team. Your positioning and distribution are decided by code every tick; you are only asked when that code could not decide. Return exactly ONE command as a bare JSON array.
+Rules: ball loose inside 12 of me and inside my third → INTERCEPT aggressive true, duration 2. Opponent carrier within 10 of my goal → PRESS_BALL 1.0, duration 2. Otherwise MOVE_TO 3 units in front of my goal (x = A+3 if A<0 else A-3), y = ball y * 0.4 clamped -4..4, sprint false. NEVER more than 15 from my goal. NEVER PASS or SHOOT.
+Briefing format: "Your goal at x=A | Opponent goal at x=B" — trust this line every tick, never memory (you may be AWAY). Your line shows pos, stamina=N/100, distBall, nearestOpp. Opponents list distToMyGoal, distToMe, vel. When a teammate has the ball the briefing carries "OPEN POSITIONS (tool find_open_position, best first)" — computed from the real game state (space, passing lane, shot gate). "SITUATION" and "LESSONS FROM PAST MATCHES" lines come from memory. "COACH INSTRUCTIONS" override everything.
 
 Commands (spell EXACTLY, anything else is dropped):
 - MOVE_TO: target_x (float -52..52), target_y (float -33..33), sprint (bool)
-- PRESS_BALL: intensity (0-1) — chase the ball carrier. duration 3
+- PRESS_BALL: intensity (0-1) — chase the ball carrier. duration 2
 - INTERCEPT: aggressive (bool) — cut the passing lane / loose ball. duration 2
 - MARK: target_player_id (int), tightness ("TIGHT"|"LOOSE"). duration 3
 - FOLLOW_PLAYER: target_player_id (int), target_team ("HOME"|"AWAY"), distance (float). duration 3
 - SLIDE_TACKLE: target_player_id (-1 = ball carrier), sprint (bool), distance (float)
-stamina below 30 → sprint false and INTERCEPT instead of PRESS_BALL.
+Sprint always — aggression over stamina — except below 25 stamina.
 
 Output: ONLY a JSON array with exactly ONE command for player <ID>, on one line, starting with [ and ending with ]. no code fences, no prose, no explanation. Bare JSON only. An empty array [] is NEVER a valid answer — there is always exactly one command.
-Example: [{"commandType":"PRESS_BALL","playerId":<ID>,"parameters":{"intensity":0.8},"duration":3}]""".replace("<ID>", str(MY_PLAYER_ID))
+Example: [{"commandType":"MOVE_TO","playerId":<ID>,"parameters":{"target_x":41.0,"target_y":-7.0,"sprint":true},"duration":0}]""".replace("<ID>", str(MY_PLAYER_ID))
 
 
 # --- Doctrine (see lib/fallback.py for what each field does) ---

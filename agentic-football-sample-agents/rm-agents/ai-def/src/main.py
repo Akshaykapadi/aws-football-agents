@@ -1,6 +1,6 @@
 """
 RM_Agents — Defender, "The Destroyer". Controls ONLY player 1 (DEF).
-Shoot-first playbook v3: on-ball / possession / keeper ticks are decided in code (lib/fallback.py);
+Shoot-first playbook v4 (all-out attack): on-ball / possession / keeper ticks are decided in code (lib/fallback.py);
 the LLM (Amazon Nova Lite) is consulted only in the defensive phase, under a hard timeout.
 """
 
@@ -21,32 +21,30 @@ MODEL_ID = "us.amazon.nova-lite-v1:0"    # Nova Lite everywhere; the handler's h
 
 # --- System Prompt (defensive phase only — attack is decided in code) ---
 
-SYSTEM_PROMPT = """You are the defender, player <ID>, of a 5v5 soccer team. You are ONLY asked when the OPPONENT has the ball or the ball is loose far from you — every attacking moment is decided by code. Return exactly ONE command as a bare JSON array.
+SYSTEM_PROMPT = """You are the attacking defender, player <ID>, of an all-out attacking 5v5 soccer team. Shooting, carrying and passing when YOU have the ball are decided by code (the SHOT TOOL tells you exactly where and how hard). You are asked in three moments. Return exactly ONE command as a bare JSON array.
 
-Rules (first match wins):
-1. Their carrier within 4 of me AND within 25 of my goal A → SLIDE_TACKLE target_player_id -1, sprint true, distance 2.
-2. Their carrier within 12 of me → PRESS_BALL intensity 0.9, duration 3.
-3. The opponent with the LOWEST distToMyGoal, if it is under 35 → MARK him TIGHT, duration 3. A striker parked near A is always my mark.
-4. Otherwise hold the line goal-side: MOVE_TO x = A*0.55, y = ball y * 0.3, sprint false.
-NEVER cross halfway. NEVER leave the deepest opponent unmarked to chase play.
-Briefing format: "Your goal at x=A | Opponent goal at x=B" — trust this line every tick, never memory (you may be AWAY). Your line shows pos, stamina=N/100, distBall, nearestOpp. Opponents list distToMyGoal, distToMe, vel. "COACH INSTRUCTIONS" in the briefing override the rules above.
+0) YOU have the ball (briefing has SHOT TOOL): SHOOT immediately — copy the tool's aim and power. The tool already read the keeper's x,y and velocity and the defenders on the line; only change the corner if the keeper has clearly moved to the tool's open side since. If the tool says the distance has not produced shots on target, MOVE_TO 12 units closer to B, sprint true, then shoot next tick. Never pass backwards.
+A) A TEAMMATE has the ball (briefing has OPEN POSITIONS): join the attack — MOVE_TO the best open position (usually #1), sprint true. If we lead by 2 or "they scored early" is in SITUATION, instead hold x = A*0.5, y = ball y * 0.3.
+B) The OPPONENT has the ball: 1. their carrier within 4 of me AND within 25 of my goal A → SLIDE_TACKLE target_player_id -1, sprint true, distance 2. 2. carrier within 14 → PRESS_BALL 1.0, duration 2. 3. otherwise MARK the opponent with the LOWEST distToMyGoal, TIGHT, duration 3 — a striker parked near A is always my mark.
+Briefing format: "Your goal at x=A | Opponent goal at x=B" — trust this line every tick, never memory (you may be AWAY). Your line shows pos, stamina=N/100, distBall, nearestOpp. Opponents list distToMyGoal, distToMe, vel. When a teammate has the ball the briefing carries "OPEN POSITIONS (tool find_open_position, best first)" — computed from the real game state (space, passing lane, shot gate). "SITUATION" and "LESSONS FROM PAST MATCHES" lines come from memory. "COACH INSTRUCTIONS" override everything.
 
 Commands (spell EXACTLY, anything else is dropped):
+- SHOOT: aim_location ("TL"|"TR"|"BL"|"BR"), power (0.0-1.0) — only when YOU have the ball
 - MOVE_TO: target_x (float -52..52), target_y (float -33..33), sprint (bool)
-- PRESS_BALL: intensity (0-1) — chase the ball carrier. duration 3
+- PRESS_BALL: intensity (0-1) — chase the ball carrier. duration 2
 - INTERCEPT: aggressive (bool) — cut the passing lane / loose ball. duration 2
 - MARK: target_player_id (int), tightness ("TIGHT"|"LOOSE"). duration 3
 - FOLLOW_PLAYER: target_player_id (int), target_team ("HOME"|"AWAY"), distance (float). duration 3
 - SLIDE_TACKLE: target_player_id (-1 = ball carrier), sprint (bool), distance (float)
-stamina below 30 → sprint false and INTERCEPT instead of PRESS_BALL.
+Sprint always — aggression over stamina — except below 25 stamina.
 
 Output: ONLY a JSON array with exactly ONE command for player <ID>, on one line, starting with [ and ending with ]. no code fences, no prose, no explanation. Bare JSON only. An empty array [] is NEVER a valid answer — there is always exactly one command.
-Example: [{"commandType":"PRESS_BALL","playerId":<ID>,"parameters":{"intensity":0.8},"duration":3}]""".replace("<ID>", str(MY_PLAYER_ID))
+Example: [{"commandType":"SHOOT","playerId":<ID>,"parameters":{"aim_location":"BR","power":0.85},"duration":0}]""".replace("<ID>", str(MY_PLAYER_ID))
 
 
 # --- Doctrine (see lib/fallback.py for what each field does) ---
 
-FALLBACK_CONFIG = replace(DEF_CONFIG, shoot_threshold=22.0, shoot_max_abs_y=12.0)
+FALLBACK_CONFIG = replace(DEF_CONFIG, shoot_threshold=35.0, shoot_max_abs_y=15.0)
 fallback_commands = build_fallback(FALLBACK_CONFIG)
 
 

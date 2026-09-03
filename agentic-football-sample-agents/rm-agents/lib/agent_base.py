@@ -29,10 +29,11 @@ from parsing import parse_commands
 from state import summarize_state
 from fallback import FallbackConfig, build_last_resort, instinct_command
 from match_memory import MatchTracker, MemoryStore
+from tools import briefing_lines, shot_line
 from state import get_goal_positions, _player_idx, _is_my_team
 
 
-LLM_TIMEOUT_S = float(os.environ.get("RM_LLM_TIMEOUT_S", "0.40"))
+LLM_TIMEOUT_S = float(os.environ.get("RM_LLM_TIMEOUT_S", "0.55"))
 
 
 def create_agent(
@@ -120,7 +121,7 @@ def create_invoke_handler(
             tracker.observe(game_state, team_id, getattr(context, "session_id", None))
             cfg = tracker.adjust(fallback_cfg)
 
-            instinct = instinct_command(cfg, game_state, team_id, pid)
+            instinct = instinct_command(cfg, game_state, team_id, pid, allow_llm_positions=True)
             if instinct:
                 c = instinct[0]
                 tracker.note_tick("instinct")
@@ -132,7 +133,10 @@ def create_invoke_handler(
                 yield json.dumps(instinct)
                 return
 
-            summary = (summarize_state(game_state, team_id, pid, position_label) + tracker.briefing_extra()
+            summary = (summarize_state(game_state, team_id, pid, position_label)
+                       + shot_line(game_state, team_id, pid, cfg.aim_flip, cfg.prefer_low, cfg.banned_bands, cfg.aim_map)
+                       + briefing_lines(game_state, team_id, pid, fallback_cfg.side_y)
+                       + tracker.briefing_extra()
                        + f"\n\nReply now with the JSON array containing exactly one command for player {pid} (never an empty array):")
             t0 = time.perf_counter()
             response_text = await _ask_llm(summary)
@@ -146,6 +150,10 @@ def create_invoke_handler(
 
             if commands:
                 tracker.note_tick("llm")
+                if commands[0]["commandType"] == "SHOOT":
+                    me = next((p for p in game_state.get("players", [])
+                               if _is_my_team(p, team_id) and _player_idx(p) == pid), None)
+                    tracker.note_shot(commands[0], (me or {}).get("position") or {}, get_goal_positions(team_id)[1])
                 log.info(f"{position_label} LLM {ms:.0f}ms returned "
                          f"{[c.get('commandType') for c in commands]}")
                 yield json.dumps(commands)
@@ -153,7 +161,11 @@ def create_invoke_handler(
                 if response_text is not None:
                     log.warn(f"{position_label} LLM parse failed after {ms:.0f}ms: {response_text[:200]}")
                 tracker.note_tick("fallback")
-                commands = fallback_fn(game_state, team_id, pid)
+                commands = instinct_command(cfg, game_state, team_id, pid) or fallback_fn(game_state, team_id, pid)
+                if commands[0]["commandType"] == "SHOOT":
+                    me = next((p for p in game_state.get("players", [])
+                               if _is_my_team(p, team_id) and _player_idx(p) == pid), None)
+                    tracker.note_shot(commands[0], (me or {}).get("position") or {}, get_goal_positions(team_id)[1])
                 log.info(f"{position_label} fallback {commands[0]['commandType']} "
                          f"{commands[0].get('parameters', {})}")
                 yield json.dumps(commands)
