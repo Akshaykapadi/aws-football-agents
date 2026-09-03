@@ -49,6 +49,10 @@ def memory_adjustments(learned_context: str) -> dict[str, bool]:
             phrase in text
             for phrase in ("low-angle shots", "poor shooting angle", "forced shots")
         ),
+        "conserve_stamina": any(
+            phrase in text
+            for phrase in ("late-match stamina", "excessive sprinting", "finished with low stamina")
+        ),
     }
 
 
@@ -90,6 +94,31 @@ def _predicted_position(player: dict, seconds: float = 0.8) -> dict:
 
 def _nearest_distance(position: dict, players: list[dict]) -> float:
     return min((dist(position, _predicted_position(p)) for p in players), default=99.0)
+
+
+def _stamina_ratio(player: dict) -> float:
+    """Normalise the engine's raw 0..1 or 0..100 stamina value."""
+    try:
+        value = float(player.get("stamina", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+    if value > 1.0:
+        value /= 100.0
+    return _clamp(value, 0.0, 1.0)
+
+
+def _can_sprint(
+    player: dict,
+    *,
+    decisive: bool = False,
+    emergency: bool = False,
+    conserve: bool = False,
+) -> bool:
+    """Spend stamina only on a scoring break or a genuine defensive emergency."""
+    minimum = 0.18 if emergency else (0.55 if decisive else 0.72)
+    if conserve and not emergency:
+        minimum += 0.10
+    return _stamina_ratio(player) >= minimum
 
 
 def _lane_clearance(start: dict, end: dict, opponents: list[dict]) -> float:
@@ -152,14 +181,74 @@ def _pass_options(
     return sorted(ranked, key=lambda item: item[0], reverse=True)
 
 
-def _shot_aim(opponents: list[dict], player_id: int) -> str:
-    keeper = next((p for p in opponents if _player_idx(p) == 0), None)
-    keeper_y = float(keeper.get("position", {}).get("y", 0)) if keeper else 0.0
-    if keeper_y > 1.0:
-        return "BL"
-    if keeper_y < -1.0:
-        return "TR"
-    return "TR" if player_id % 2 else "BL"
+def _best_shot_lane(
+    start: dict,
+    opponent_goal_x: float,
+    opponents: list[dict],
+    player_id: int,
+) -> tuple[str, float]:
+    """Choose the less-covered corner and return its predicted lane clearance."""
+    corners = [("TR", 4.2), ("BL", -4.2)]
+    if player_id % 2 == 0:
+        corners.reverse()
+    ranked = [
+        (
+            _lane_clearance(start, {"x": opponent_goal_x, "y": target_y}, opponents),
+            aim,
+        )
+        for aim, target_y in corners
+    ]
+    clearance, aim = max(ranked, key=lambda item: item[0])
+    return aim, clearance
+
+
+def _shoot_if_open(
+    position_label: str,
+    pos: dict,
+    opponent_goal_x: float,
+    opponents: list[dict],
+    player_id: int,
+    team_id: int,
+    avoid_low_angle_shots: bool,
+) -> TacticalDecision | None:
+    """Shoot-first policy for any player with a viable sight of goal.
+
+    The keeper almost never reaches this range, but is intentionally eligible:
+    possession and an open goal should not be turned into an unnecessary pass.
+    """
+    goal_distance = dist(pos, {"x": opponent_goal_x, "y": 0.0})
+    range_by_role = {"GK": 28.0, "DEF": 30.0, "MID": 33.0, "FWD1": 36.0, "FWD2": 36.0}
+    long_range_by_role = {"GK": 42.0, "DEF": 42.0, "MID": 46.0, "FWD1": 48.0, "FWD2": 48.0}
+    max_distance = range_by_role.get(position_label, 32.0)
+    max_width = 20.0 if avoid_low_angle_shots else 25.0
+    if abs(float(pos.get("y", 0) or 0)) > max_width:
+        return None
+
+    aim, lane_clearance = _best_shot_lane(pos, opponent_goal_x, opponents, player_id)
+    close_finish = goal_distance <= 19.0 and lane_clearance >= 1.5
+    clear_shot = goal_distance <= max_distance and lane_clearance >= 3.0
+    very_open_shot = goal_distance <= max_distance + 4.0 and lane_clearance >= 5.5
+    long_open_shot = (
+        goal_distance <= long_range_by_role.get(position_label, 44.0)
+        and abs(float(pos.get("y", 0) or 0)) <= 18.0
+        and lane_clearance >= 7.0
+    )
+    if not (close_finish or clear_shot or very_open_shot or long_open_shot):
+        return None
+
+    power = _clamp(0.78 + goal_distance / 130.0, 0.82, 0.99)
+    return TacticalDecision(
+        [_cmd("SHOOT", player_id, team_id, {
+            "aim_location": aim,
+            "power": round(power, 2),
+        })],
+        0.99 if long_open_shot else (0.98 if clear_shot or very_open_shot else 0.95),
+        (
+            f"clearly visible long-range goal ({lane_clearance:.1f}m clearance)"
+            if long_open_shot and goal_distance > max_distance
+            else f"open shooting lane ({lane_clearance:.1f}m clearance)"
+        ),
+    )
 
 
 def _pass_command(option, pid: int, tid: int) -> dict:
@@ -188,6 +277,18 @@ def _on_ball(
     goal = {"x": opponent_goal_x, "y": 0.0}
     goal_distance = dist(pos, goal)
     pressure = _nearest_distance(pos, opponents)
+
+    shot = _shoot_if_open(
+        position_label,
+        pos,
+        opponent_goal_x,
+        opponents,
+        player_id,
+        team_id,
+        adjustments["avoid_low_angle_shots"],
+    )
+    if shot is not None:
+        return shot
 
     if position_label == "GK":
         options = _pass_options(me, teammates, opponents, team_id)
@@ -227,24 +328,12 @@ def _on_ball(
             [_cmd("MOVE_TO", player_id, team_id, {
                 "target_x": _clamp(float(pos.get("x", 0)) + 7 * _attack_direction(team_id), -52, 52),
                 "target_y": _clamp(float(pos.get("y", 0)) * 0.7, -28, 28),
-                "sprint": pressure < 5,
+                "sprint": pressure < 5 and _can_sprint(
+                    me, decisive=True, conserve=adjustments["conserve_stamina"]
+                ),
             })],
             0.82,
             "defender carried away from immediate danger",
-        )
-
-    shot_distance = 27.0 if position_label.startswith("FWD") else 21.5
-    shot_width = 20 if adjustments["avoid_low_angle_shots"] else 24
-    if adjustments["avoid_low_angle_shots"]:
-        shot_distance -= 2.0
-    if goal_distance <= shot_distance and abs(float(pos.get("y", 0))) <= shot_width:
-        power = _clamp(0.72 + goal_distance / 120.0, 0.78, 0.96)
-        return TacticalDecision(
-            [_cmd("SHOOT", player_id, team_id, {
-                "aim_location": _shot_aim(opponents, player_id), "power": round(power, 2),
-            })],
-            0.95,
-            "high-value shooting position",
         )
 
     release_pressure = 7.5 if adjustments["release_earlier"] else 5.5
@@ -264,7 +353,11 @@ def _on_ball(
     ambiguous = 20.0 < goal_distance < 38.0 and 5.0 <= pressure <= 13.0 and bool(options)
     return TacticalDecision(
         [_cmd("MOVE_TO", player_id, team_id, {
-            "target_x": round(target_x, 1), "target_y": round(target_y, 1), "sprint": pressure < 8.0,
+            "target_x": round(target_x, 1),
+            "target_y": round(target_y, 1),
+            "sprint": pressure < 8.0 and _can_sprint(
+                me, decisive=True, conserve=adjustments["conserve_stamina"]
+            ),
         })],
         0.58 if ambiguous else 0.86,
         "ambiguous final-third choice" if ambiguous else "controlled forward carry",
@@ -296,7 +389,9 @@ def _off_ball(
         target_y = _clamp(float(ball_pos.get("y", 0)) * 0.45, -11, 11)
         return TacticalDecision(
             [_cmd("MOVE_TO", player_id, team_id, {
-                "target_x": target_x, "target_y": round(target_y, 1), "sprint": distance_to_ball < 10,
+                "target_x": target_x,
+                "target_y": round(target_y, 1),
+                "sprint": distance_to_ball < 10 and _can_sprint(me, emergency=True),
             })],
             0.99,
             "goalkeeper angle and line control",
@@ -357,7 +452,15 @@ def _off_ball(
             [_cmd("MOVE_TO", player_id, team_id, {
                 "target_x": round(_world_x(target_attack_x, team_id), 1),
                 "target_y": round(_clamp(float(ball_pos.get("y", 0)) * 0.65, -22, 22), 1),
-                "sprint": opponent_possession and distance_to_ball > 20,
+                "sprint": (
+                    opponent_possession
+                    and 20 < distance_to_ball < 32
+                    and _can_sprint(
+                        me,
+                        emergency=ball_attack_x < -12,
+                        conserve=adjustments["conserve_stamina"],
+                    )
+                ),
             })],
             0.94,
             "midfield rest-defense and support position",
@@ -375,11 +478,15 @@ def _off_ball(
     # Move the two forwards on different vertical lanes and slightly toward the
     # opposite side of the ball to stretch the last defender.
     target_y = _clamp(lane_y - 0.18 * float(ball_pos.get("y", 0)), -25, 25)
+    run_gain = target_attack_x - _attack_x(float(pos.get("x", 0)), team_id)
+    decisive_break = our_possession and ball_attack_x > 4 and run_gain > 8
     return TacticalDecision(
         [_cmd("MOVE_TO", player_id, team_id, {
             "target_x": round(_world_x(target_attack_x, team_id), 1),
             "target_y": round(target_y, 1),
-            "sprint": our_possession and target_attack_x > _attack_x(float(pos.get("x", 0)), team_id) + 4,
+            "sprint": decisive_break and _can_sprint(
+                me, decisive=True, conserve=adjustments["conserve_stamina"]
+            ),
         })],
         0.95,
         "staggered forward support lane",

@@ -36,6 +36,77 @@ def test_all_roles_return_one_local_command():
         assert 0.0 <= decision.confidence <= 1.0
 
 
+def _shooting_state(
+    player_id: int,
+    stamina: float = 0.8,
+    shooter_x: float = 30.0,
+    keeper_y: float = -9.0,
+) -> dict:
+    state = copy.deepcopy(GAME_STATE)
+    holder = next(
+        p for p in state["players"]
+        if _is_my_team(p, 0) and p["agentId"] == f"agentId_{player_id}"
+    )
+    holder["position"] = {"x": shooter_x, "y": 0.0}
+    holder["velocity"] = {"x": 0.0, "y": 0.0}
+    holder["stamina"] = stamina
+    state["ball"].update({
+        "position": {"x": shooter_x, "y": 0.0, "z": 0.0},
+        "possessionAgentId": f"agentId_{player_id}",
+        "possessionTeamCode": "home",
+        "isFree": False,
+    })
+    for opponent in (p for p in state["players"] if not _is_my_team(p, 0)):
+        opponent["position"] = {
+            "x": 50.0 if opponent["agentId"] == "agentId_0" else 20.0,
+            "y": keeper_y if opponent["agentId"] == "agentId_0" else 28.0,
+        }
+        opponent["velocity"] = {"x": 0.0, "y": 0.0}
+    return state
+
+
+def test_every_player_shoots_an_open_goal_lane_in_range():
+    for pid, label in enumerate(("GK", "DEF", "MID", "FWD1", "FWD2")):
+        decision = decide_locally(_shooting_state(pid), 0, pid, label)
+        assert decision.commands[0]["commandType"] == "SHOOT", (label, decision)
+        assert decision.confidence >= 0.95
+
+
+def test_every_player_takes_a_clearly_open_long_shot():
+    for pid, label in enumerate(("GK", "DEF", "MID", "FWD1", "FWD2")):
+        state = _shooting_state(pid, shooter_x=13.0, keeper_y=-13.0)
+        decision = decide_locally(state, 0, pid, label)
+        assert decision.commands[0]["commandType"] == "SHOOT", (label, decision)
+        assert "long-range" in decision.reason
+
+
+def test_low_stamina_disables_routine_forward_sprint():
+    state = copy.deepcopy(GAME_STATE)
+    midfielder = next(
+        p for p in state["players"] if _is_my_team(p, 0) and p["agentId"] == "agentId_2"
+    )
+    forward = next(
+        p for p in state["players"] if _is_my_team(p, 0) and p["agentId"] == "agentId_4"
+    )
+    midfielder["position"] = {"x": 10.0, "y": 0.0}
+    forward["position"] = {"x": 0.0, "y": 12.0}
+    forward["stamina"] = 0.30
+    state["ball"].update({
+        "position": {"x": 10.0, "y": 0.0, "z": 0.0},
+        "possessionAgentId": "agentId_2",
+        "possessionTeamCode": "home",
+        "isFree": False,
+    })
+
+    tired = decide_locally(state, 0, 4, "FWD2")
+    assert tired.commands[0]["commandType"] == "MOVE_TO"
+    assert tired.commands[0]["parameters"]["sprint"] is False
+
+    forward["stamina"] = 0.90
+    fresh = decide_locally(state, 0, 4, "FWD2")
+    assert fresh.commands[0]["parameters"]["sprint"] is True
+
+
 def test_duplicate_player_numbers_find_correct_possession_team():
     state = copy.deepcopy(GAME_STATE)
     away_forward = next(
@@ -64,6 +135,12 @@ def test_retrieved_lessons_adjust_the_local_policy():
     assert adjustments["release_earlier"]
     assert adjustments["protect_transition"]
     assert not adjustments["attack_higher"]
+    assert not adjustments["conserve_stamina"]
+
+    stamina_adjustment = memory_adjustments(
+        "We finished with low energy; reduce excessive sprinting to preserve late-match stamina."
+    )
+    assert stamina_adjustment["conserve_stamina"]
 
 
 def test_away_targets_are_mirrored():
@@ -107,6 +184,26 @@ def test_tracker_finishes_practice_match_and_starts_fresh_match():
     transition = tracker.observe({}, next_match, 0)
     assert transition.started
     assert transition.match_key != episode["match_id"]
+
+
+def test_match_summary_records_team_stamina_and_learns_conservation():
+    tracker = MatchTracker(player_id=2)
+    state = copy.deepcopy(GAME_STATE)
+    state["tick"] = 1
+    state["gameTime"] = 1
+    for player in (p for p in state["players"] if _is_my_team(p, 0)):
+        player["stamina"] = 0.35
+        player["isSprinting"] = True
+    tracker.observe({"isPractice": True}, state, 0)
+
+    state["tick"] = 90
+    state["gameTime"] = 90
+    state["playMode"] = "FULL_TIME"
+    transition = tracker.observe({"isPractice": True}, state, 0)
+    episode = json.loads(transition.completed_summary)
+    assert episode["final_team_stamina_percent"] == 35
+    assert episode["sprinting_player_tick_percent"] == 100
+    assert any("late-match stamina" in lesson for lesson in episode["lessons"])
 
 
 class _FakeMemoryClient:

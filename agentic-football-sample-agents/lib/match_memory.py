@@ -38,6 +38,13 @@ def _safe_number(value, default=0.0) -> float:
         return default
 
 
+def _stamina_ratio(value) -> float:
+    number = _safe_number(value, 1.0)
+    if number > 1.0:
+        number /= 100.0
+    return max(0.0, min(1.0, number))
+
+
 def _score(game_state: dict) -> tuple[int, int]:
     score = game_state.get("score", {})
     return int(_safe_number(score.get("home", 0))), int(_safe_number(score.get("away", 0)))
@@ -78,6 +85,11 @@ class MatchStats:
     territory_sum: float = 0.0
     pressure_sum: float = 0.0
     pressure_samples: int = 0
+    team_stamina_sum: float = 0.0
+    team_stamina_samples: int = 0
+    minimum_team_stamina: float = 1.0
+    final_team_stamina: float = 1.0
+    sprinting_player_ticks: int = 0
     turnovers_won: int = 0
     turnovers_lost: int = 0
     commands: Counter = field(default_factory=Counter)
@@ -121,6 +133,15 @@ class MatchStats:
             self.pressure_sum += pressure
             self.pressure_samples += 1
 
+        teammates = [p for p in players if _is_my_team(p, self.team_id)]
+        stamina_values = [_stamina_ratio(p.get("stamina", 1.0)) for p in teammates]
+        if stamina_values:
+            self.team_stamina_sum += sum(stamina_values)
+            self.team_stamina_samples += len(stamina_values)
+            self.minimum_team_stamina = min(self.minimum_team_stamina, min(stamina_values))
+            self.final_team_stamina = sum(stamina_values) / len(stamina_values)
+            self.sprinting_player_ticks += sum(bool(p.get("isSprinting")) for p in teammates)
+
     def record_command(self, command: dict) -> None:
         command_type = command.get("commandType")
         if command_type:
@@ -150,6 +171,8 @@ class MatchStats:
         possession_pct = round(100 * self.possession_ticks / contested) if contested else 0
         avg_territory = self.territory_sum / max(self.ticks, 1)
         avg_pressure = self.pressure_sum / max(self.pressure_samples, 1)
+        avg_team_stamina = self.team_stamina_sum / max(self.team_stamina_samples, 1)
+        sprinting_pct = 100 * self.sprinting_player_ticks / max(self.team_stamina_samples, 1)
         command_mix = dict(self.commands.most_common())
 
         lessons = []
@@ -163,6 +186,8 @@ class MatchStats:
             lessons.append("create a final-third pass before forcing low-angle shots")
         if their_end > 0:
             lessons.append("keep defender and midfielder staggered during attacks")
+        if self.final_team_stamina < 0.45 or sprinting_pct > 25:
+            lessons.append("reduce excessive sprinting to preserve late-match stamina")
         if not lessons:
             lessons.append("preserve the successful shape while varying the final action")
 
@@ -179,6 +204,10 @@ class MatchStats:
             "possession_percent": possession_pct,
             "average_attack_axis_ball_x": round(avg_territory, 1),
             "average_nearest_pressure": round(avg_pressure, 1),
+            "average_team_stamina_percent": round(100 * avg_team_stamina),
+            "minimum_team_stamina_percent": round(100 * self.minimum_team_stamina),
+            "final_team_stamina_percent": round(100 * self.final_team_stamina),
+            "sprinting_player_tick_percent": round(sprinting_pct),
             "turnovers_won": self.turnovers_won,
             "turnovers_lost": self.turnovers_lost,
             "command_mix": command_mix,
