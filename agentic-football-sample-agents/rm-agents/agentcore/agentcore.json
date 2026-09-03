@@ -1,0 +1,92 @@
+{
+  "$schema": "https://schema.agentcore.aws.dev/v1/agentcore.json",
+  "name": "RM",
+  "version": 1,
+  "managedBy": "CDK",
+  "tags": {
+    "agentcore:created-by": "agentcore-cli",
+    "agentcore:project-name": "RM"
+  },
+  "runtimes": [
+    {
+      "name": "Agents_gk",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-gk/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    },
+    {
+      "name": "Agents_def",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-def/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    },
+    {
+      "name": "Agents_mid",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-mid/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    },
+    {
+      "name": "Agents_fwd1",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-fwd1/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    },
+    {
+      "name": "Agents_fwd2",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-fwd2/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    }
+  ],
+  "memories": [
+    {
+      "name": "rm_memory",
+      "eventExpiryDuration": 30,
+      "strategies": [
+        {
+          "type": "SEMANTIC",
+          "name": "rm_lessons",
+          "description": "Facts about which shooting, pressing and defending decisions scored or conceded goals for this position",
+          "namespaceTemplates": [
+            "/rm/lessons/{actorId}"
+          ]
+        },
+        {
+          "type": "SUMMARIZATION",
+          "name": "rm_summaries",
+          "description": "Per-session summary of the match events recorded by this position",
+          "namespaceTemplates": [
+            "/rm/summaries/{actorId}/{sessionId}"
+          ]
+        }
+      ]
+    }
+  ],
+  "knowledgeBases": [],
+  "credentials": [],
+  "evaluators": [],
+  "onlineEvalConfigs": [],
+  "agentCoreGateways": [],
+  "policyEngines": [],
+  "configBundles": [],
+  "abTests": [],
+  "harnesses": [],
+  "datasets": [],
+  "payments": []
+}
