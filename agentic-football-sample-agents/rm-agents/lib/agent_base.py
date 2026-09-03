@@ -75,10 +75,14 @@ def create_invoke_handler(
     log.info(f"{position_label} memory {'ON' if store.enabled else 'off (no MEMORY_*_ID env)'}")
 
     def _call_llm(summary: str) -> str:
+        t0 = time.perf_counter()
         try:
             return str(agent(summary))
         finally:
             llm_lock.release()
+            ms = (time.perf_counter() - t0) * 1000
+            if ms > llm_timeout_s * 1000:
+                log.info(f"{position_label} LLM late call finished in {ms:.0f}ms")
 
     async def _ask_llm(summary: str):
         """LLM reply text, or None when busy / timed out / errored.
@@ -128,7 +132,8 @@ def create_invoke_handler(
                 yield json.dumps(instinct)
                 return
 
-            summary = summarize_state(game_state, team_id, pid, position_label) + tracker.briefing_extra()
+            summary = (summarize_state(game_state, team_id, pid, position_label) + tracker.briefing_extra()
+                       + f"\n\nReply now with the JSON array containing exactly one command for player {pid} (never an empty array):")
             t0 = time.perf_counter()
             response_text = await _ask_llm(summary)
             ms = (time.perf_counter() - t0) * 1000

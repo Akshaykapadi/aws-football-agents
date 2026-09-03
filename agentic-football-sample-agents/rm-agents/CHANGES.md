@@ -25,7 +25,8 @@ Changes
   AgentCore Memory off-thread and seeds priors + LESSONS lines from past matches at the next match start.
 - agentcore/agentcore.json: `rm_memory` memory resource (30-day events, SEMANTIC + SUMMARIZATION strategies).
 - lib/parsing.py: fills aim_location/power for SHOOT, type for PASS, duration for maintained commands.
-- ai-*/src/main.py: Nova Lite everywhere (per request; the hard timeout keeps replies in budget); prompts cut to the defensive phase (~2.3k chars),
+- ai-*/src/main.py: Nova Lite everywhere (per request; the hard timeout keeps replies in budget). Lite answered `[]`
+  to the v3 prompt until the prompt said an empty array is never valid and the briefing ended with a one-line nudge; prompts cut to the defensive phase (~2.3k chars),
   SET_STANCE removed (engine docs: 1=DEFENSIVE, 2=ATTACKING — the stock prompts had it backwards).
 - test_rm_agents.py: 34 tests; ai-*/test_local.py: instinct scenarios + `--llm` latency probe.
 - Self-contained team directory; AgentCore project `RM`, runtimes `Agents_*` → deployed as `RM_Agents_*`.

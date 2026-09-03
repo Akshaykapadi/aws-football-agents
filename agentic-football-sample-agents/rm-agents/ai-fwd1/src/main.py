@@ -38,7 +38,7 @@ Commands (spell EXACTLY, anything else is dropped):
 - SLIDE_TACKLE: target_player_id (-1 = ball carrier), sprint (bool), distance (float)
 stamina below 30 → sprint false and INTERCEPT instead of PRESS_BALL.
 
-Output: ONLY a JSON array with exactly ONE command for player <ID>, on one line, starting with [ and ending with ]. no code fences, no prose, no explanation. Bare JSON only.
+Output: ONLY a JSON array with exactly ONE command for player <ID>, on one line, starting with [ and ending with ]. no code fences, no prose, no explanation. Bare JSON only. An empty array [] is NEVER a valid answer — there is always exactly one command.
 Example: [{"commandType":"PRESS_BALL","playerId":<ID>,"parameters":{"intensity":0.8},"duration":3}]""".replace("<ID>", str(MY_PLAYER_ID))
 
 
