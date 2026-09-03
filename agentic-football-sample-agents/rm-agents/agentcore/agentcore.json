@@ -1,15 +1,15 @@
 {
   "$schema": "https://schema.agentcore.aws.dev/v1/agentcore.json",
-  "name": "RM_Agents",
+  "name": "RM",
   "version": 1,
   "managedBy": "CDK",
   "tags": {
     "agentcore:created-by": "agentcore-cli",
-    "agentcore:project-name": "RM_Agents"
+    "agentcore:project-name": "RM"
   },
   "runtimes": [
     {
-      "name": "ai_gk_agent",
+      "name": "Agents_gk",
       "build": "CodeZip",
       "entrypoint": "src/main.py",
       "codeLocation": "ai-gk/",
@@ -18,7 +18,7 @@
       "protocol": "HTTP"
     },
     {
-      "name": "ai_def_agent",
+      "name": "Agents_def",
       "build": "CodeZip",
       "entrypoint": "src/main.py",
       "codeLocation": "ai-def/",
@@ -27,7 +27,7 @@
       "protocol": "HTTP"
     },
     {
-      "name": "ai_mid_agent",
+      "name": "Agents_mid",
       "build": "CodeZip",
       "entrypoint": "src/main.py",
       "codeLocation": "ai-mid/",
@@ -36,7 +36,7 @@
       "protocol": "HTTP"
     },
     {
-      "name": "ai_fwd1_agent",
+      "name": "Agents_fwd1",
       "build": "CodeZip",
       "entrypoint": "src/main.py",
       "codeLocation": "ai-fwd1/",
@@ -45,7 +45,7 @@
       "protocol": "HTTP"
     },
     {
-      "name": "ai_fwd2_agent",
+      "name": "Agents_fwd2",
       "build": "CodeZip",
       "entrypoint": "src/main.py",
       "codeLocation": "ai-fwd2/",

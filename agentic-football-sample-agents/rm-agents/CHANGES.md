@@ -28,7 +28,7 @@ Changes
 - ai-*/src/main.py: Nova Lite everywhere (per request; the hard timeout keeps replies in budget); prompts cut to the defensive phase (~2.3k chars),
   SET_STANCE removed (engine docs: 1=DEFENSIVE, 2=ATTACKING — the stock prompts had it backwards).
 - test_rm_agents.py: 34 tests; ai-*/test_local.py: instinct scenarios + `--llm` latency probe.
-- Self-contained team directory; AgentCore project renamed RM_Agents.
+- Self-contained team directory; AgentCore project `RM`, runtimes `Agents_*` → deployed as `RM_Agents_*`.
 
 ## v2 — 2026-09-03 — counter-press (iteration 1)
 

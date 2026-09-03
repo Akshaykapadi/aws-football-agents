@@ -2,9 +2,9 @@
 
 Five single-player agents for the 5v5 Agentic Football match server, built with the
 [Strands Agents SDK](https://github.com/strands-agents/sdk-python) and deployed to
-[Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/) as project `RM_Agents`
-(runtimes `RM_Agents_ai_gk_agent`, `RM_Agents_ai_def_agent`, `RM_Agents_ai_mid_agent`,
-`RM_Agents_ai_fwd1_agent`, `RM_Agents_ai_fwd2_agent`).
+[Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/) as AgentCore project `RM`
+(runtimes `RM_Agents_gk`, `RM_Agents_def`, `RM_Agents_mid`, `RM_Agents_fwd1`, `RM_Agents_fwd2`;
+the CLI requires an alphanumeric project name, so the `RM_Agents` prefix is project + runtime name).
 
 This directory is self-contained: `lib/` lives here, so nothing in the sibling teams changes.
 
@@ -55,7 +55,7 @@ rm-agents/
 ├── ai-gk/ ai-def/ ai-mid/ ai-fwd1/ ai-fwd2/
 │   ├── src/main.py      # prompt + doctrine overrides + wiring
 │   └── test_local.py    # local tests; --llm calls Nova Micro and prints latency
-├── agentcore/           # AgentCore CLI project (CDK); project RM_Agents, memory rm_memory
+├── agentcore/           # AgentCore CLI project (CDK); project RM, runtimes Agents_*, memory rm_memory
 ├── deploy_all.py        # cdk bootstrap → inject lib/ → agentcore deploy
 └── test_rm_agents.py    # 34 doctrine tests (shooting, accuracy, pressure, support, keeper, mirror, timeout, memory)
 ```
@@ -86,7 +86,7 @@ and removes the copies afterwards. Same command redeploys in place (ARNs unchang
 
 ## Reading a match afterwards
 
-Every tick logs one line to CloudWatch (`/aws/bedrock-agentcore/runtimes/RM_Agents_ai_*-DEFAULT`):
+Every tick logs one line to CloudWatch (`/aws/bedrock-agentcore/runtimes/RM_Agents_*-DEFAULT`):
 
 ```
 FWD1 memory ON
