@@ -1,0 +1,25 @@
+# Staged agent directories (generated at deploy time by deploy_all.py)
+_staged/
+
+# Deploy-time injections into agent dirs (removed by deploy_all.py cleanup)
+ai-*/lib/
+ai-*/gateway_agent_base.py
+ai-*/gateway_invoke_handler.py
+
+# Build artifacts (deploy-all.sh)
+_build/
+__pycache__/
+*.py[cod]
+
+# AgentCore cached dependencies (large zips, rebuilt on deploy)
+.bedrock_agentcore/
+
+# Generated config (built from .template by deploy-all.sh)
+.bedrock_agentcore.yaml
+
+# Virtual environments
+.venv/
+venv/
+
+# uv lock
+uv.lock

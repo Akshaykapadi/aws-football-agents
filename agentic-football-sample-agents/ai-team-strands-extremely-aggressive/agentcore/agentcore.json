@@ -1,0 +1,69 @@
+{
+  "$schema": "https://schema.agentcore.aws.dev/v1/agentcore.json",
+  "name": "TeamStrandsAggressive",
+  "version": 1,
+  "managedBy": "CDK",
+  "tags": {
+    "agentcore:created-by": "agentcore-cli",
+    "agentcore:project-name": "TeamStrandsAggressive"
+  },
+  "runtimes": [
+    {
+      "name": "ai_gk_agent",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-gk/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    },
+    {
+      "name": "ai_def_agent",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-def/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    },
+    {
+      "name": "ai_mid_agent",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-mid/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    },
+    {
+      "name": "ai_fwd1_agent",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-fwd1/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    },
+    {
+      "name": "ai_fwd2_agent",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-fwd2/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    }
+  ],
+  "memories": [],
+  "knowledgeBases": [],
+  "credentials": [],
+  "evaluators": [],
+  "onlineEvalConfigs": [],
+  "agentCoreGateways": [],
+  "policyEngines": [],
+  "configBundles": [],
+  "abTests": [],
+  "harnesses": [],
+  "datasets": [],
+  "payments": []
+}

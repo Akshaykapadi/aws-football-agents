@@ -1,0 +1,85 @@
+{
+  "$schema": "https://schema.agentcore.aws.dev/v1/agentcore.json",
+  "name": "TeamStrandsBalancedAK",
+  "version": 1,
+  "managedBy": "CDK",
+  "tags": {
+    "agentcore:created-by": "agentcore-cli",
+    "agentcore:project-name": "TeamStrandsBalancedAK"
+  },
+  "runtimes": [
+    {
+      "name": "ai_gk_agent_ak",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-gk/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    },
+    {
+      "name": "ai_def_agent_ak",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-def/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    },
+    {
+      "name": "ai_mid_agent_ak",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-mid/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    },
+    {
+      "name": "ai_fwd1_agent_ak",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-fwd1/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    },
+    {
+      "name": "ai_fwd2_agent_ak",
+      "build": "CodeZip",
+      "entrypoint": "src/main.py",
+      "codeLocation": "ai-fwd2/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP"
+    }
+  ],
+  "memories": [
+    {
+      "name": "team_memory",
+      "eventExpiryDuration": 30,
+      "strategies": [
+        {
+          "type": "EPISODIC",
+          "namespaceTemplates": [
+            "/episodes/{actorId}/{sessionId}"
+          ],
+          "reflectionNamespaceTemplates": [
+            "/episodes/{actorId}"
+          ]
+        }
+      ]
+    }
+  ],
+  "knowledgeBases": [],
+  "credentials": [],
+  "evaluators": [],
+  "onlineEvalConfigs": [],
+  "agentCoreGateways": [],
+  "policyEngines": [],
+  "configBundles": [],
+  "abTests": [],
+  "harnesses": [],
+  "datasets": [],
+  "payments": []
+}

@@ -1,0 +1,50 @@
+---
+layout: default
+title: Snippets
+permalink: /snippets/
+---
+
+<h1>{{ page.title }}</h1>
+<p>Code snippets and quick examples from the _snippets folder</p>
+
+<div class="content-grid">
+  {% assign sorted_snippets = site.snippets | sort: 'date' | reverse %}
+  {% for snippet in sorted_snippets %}
+    <div class="content-card">
+      <h3><a href="{{ snippet.url | relative_url }}">{{ snippet.title }}</a></h3>
+      
+      {% if snippet.description %}
+        <p>{{ snippet.description }}</p>
+      {% endif %}
+      
+      {% if snippet.tags %}
+        <div class="tags">
+          {% for tag in snippet.tags %}
+            <span class="tag">{{ tag }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
+      
+      {% if snippet.technologies %}
+        <div class="tech-stack">
+          <strong>Tech:</strong>
+          {% for tech in snippet.technologies %}
+            <code>{{ tech }}</code>
+          {% endfor %}
+        </div>
+      {% endif %}
+      
+      <div class="meta">
+        {% if snippet.difficulty %}
+          <span class="difficulty difficulty-{{ snippet.difficulty | downcase }}">
+            {{ snippet.difficulty }}
+          </span>
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+  
+  {% if site.snippets.size == 0 %}
+    <p class="empty-state">No snippets yet. Add markdown files to the _snippets folder to see them here!</p>
+  {% endif %}
+</div>

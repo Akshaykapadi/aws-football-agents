@@ -1,0 +1,50 @@
+---
+layout: default
+title: Experiments
+permalink: /experiments/
+---
+
+<h1>{{ page.title }}</h1>
+<p>All experiments are automatically listed from the _experiments folder</p>
+
+<div class="content-grid">
+  {% assign sorted_experiments = site.experiments | sort: 'date' | reverse %}
+  {% for experiment in sorted_experiments %}
+    <div class="content-card">
+      <h3><a href="{{ experiment.url | relative_url }}">{{ experiment.title }}</a></h3>
+      
+      {% if experiment.description %}
+        <p>{{ experiment.description }}</p>
+      {% endif %}
+      
+      {% if experiment.tags %}
+        <div class="tags">
+          {% for tag in experiment.tags %}
+            <span class="tag">{{ tag }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
+      
+      {% if experiment.technologies %}
+        <div class="tech-stack">
+          <strong>Tech:</strong>
+          {% for tech in experiment.technologies %}
+            <code>{{ tech }}</code>
+          {% endfor %}
+        </div>
+      {% endif %}
+      
+      <div class="meta">
+        {% if experiment.difficulty %}
+          <span class="difficulty difficulty-{{ experiment.difficulty | downcase }}">
+            {{ experiment.difficulty }}
+          </span>
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+  
+  {% if site.experiments.size == 0 %}
+    <p class="empty-state">No experiments yet. Add markdown files to the _experiments folder to see them here!</p>
+  {% endif %}
+</div>

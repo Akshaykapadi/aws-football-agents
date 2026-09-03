@@ -1,0 +1,8 @@
+[project]
+name = "afc-gateway-tools"
+version = "0.1.0"
+requires-python = ">=3.10"
+# The tactical-tool Lambdas use only the Python standard library (json, math).
+# This file exists so the AgentCore CDK packer can build the Lambda code zips
+# from this directory (it resolves dependencies from pyproject.toml).
+dependencies = []

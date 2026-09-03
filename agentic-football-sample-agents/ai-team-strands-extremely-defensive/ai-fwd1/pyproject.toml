@@ -1,0 +1,9 @@
+[project]
+name = "ai_fwd1_agent"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "strands-agents>=1.45.0",
+    "bedrock-agentcore>=1.17.0",
+    "aws-opentelemetry-distro>=0.18.0",
+]
