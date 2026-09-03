@@ -1,6 +1,6 @@
 ---
 title: "02 Invoke Model With Code Interpreter"
-date: 2026-02-18
+date: 2026-09-03
 layout: snippet
 language: python
 description: "02 - Bedrock InvokeModel API + AgentCore Code Interpreter
